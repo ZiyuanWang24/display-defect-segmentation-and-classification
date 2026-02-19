@@ -1,0 +1,116 @@
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+htmlcov/
+*.log
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# =========================
+# Data / Outputs (ML/CV)
+# =========================
+data/
+dataset/
+datasets/
+inputs/
+outputs/
+output/
+results/
+runs/
+logs/
+tmp/
+temp/
+backup/
+
+# Common experiment trackers
+wandb/
+mlruns/
+lightning_logs/
+tensorboard/
+tb_logs/
+
+# =========================
+# Model artifacts / weights
+# =========================
+checkpoints/
+checkpoint/
+weights/
+models/
+model_weights/
+*.pt
+*.pth
+*.ckpt
+*.torch
+*.onnx
+*.tflite
+*.engine
+*.trt
+
+# =========================
+# Large media / generated assets
+# (keep source images if needed; ignore bulk outputs)
+# =========================
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# If you generate lots of images:
+# generated_images/
+# viz/
+
+# =========================
+# Secrets
+# =========================
+.env
+.env.*
+*.key
+*.pem
+secrets/
+credentials/
+
+# =========================
+# Project-specific (optional)
+# =========================
+# If you have specific folders from your project:
+# sam_trained_models/
+# assets/generated/

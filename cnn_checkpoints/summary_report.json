@@ -1,0 +1,68 @@
+{
+  "data_dir": "data/MSD-US/test",
+  "classes": [
+    "oil",
+    "scratch",
+    "stain"
+  ],
+  "img_size": 224,
+  "seed": 42,
+  "splits": {
+    "train": {
+      "n": 840,
+      "counts": {
+        "oil": 280,
+        "scratch": 280,
+        "stain": 280
+      }
+    },
+    "eval": {
+      "n": 240,
+      "counts": {
+        "oil": 80,
+        "scratch": 80,
+        "stain": 80
+      }
+    },
+    "test": {
+      "n": 120,
+      "counts": {
+        "oil": 40,
+        "scratch": 40,
+        "stain": 40
+      }
+    }
+  },
+  "best_checkpoint": "cnn_checkpoints/mobilenetv2_best.pt",
+  "best_selection_metric": "eval_macro_f1",
+  "test_metrics": {
+    "accuracy": 1.0,
+    "macro_precision": 1.0,
+    "macro_recall": 1.0,
+    "macro_f1": 1.0,
+    "weighted_precision": 1.0,
+    "weighted_recall": 1.0,
+    "weighted_f1": 1.0,
+    "per_class": {
+      "oil": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 40
+      },
+      "scratch": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 40
+      },
+      "stain": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 40
+      }
+    }
+  },
+  "model_params": 2227715
+}
