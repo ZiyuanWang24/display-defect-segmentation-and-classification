@@ -4,7 +4,6 @@ This repo fine-tunes **SAM2** (Segment Anything Model 2) to segment *display sur
 The goal is to improve segmentation quality on small / low-contrast defects where zero-shot SAM2 can struggle.
 
 ---
----
 
 ## 1) Problem & Motivation
 
@@ -171,7 +170,7 @@ stain | 230 | 0.0665 | 0.1248 | 0.0668 | 0.9476 | 0.7895 | 0.8824 | 0.8485 | 0.9
 ### Qualitative comparison
 
 ```md
-![Zero-shot vs Fine-tuned](checkpoints/test_visual_grid.png)
+![Zero-shot vs Fine-tuned](SAM_results/test_visual_grid.png)
 
 ```
 ---

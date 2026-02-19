@@ -144,11 +144,6 @@ After running, copy your final metrics here:
   - scr: P=1.0, R=1.0, F1=1.0, support=140
   - sta: P=0.99, R=1.0, F1=0.99, support=115
 
-Attach (or link) these files in your GitHub repo:
-- `cnn_checkpoints/test_metrics.json`
-- `cnn_checkpoints/confusion_matrix.png` (if enabled)
-- `cnn_checkpoints/training_log.csv`
-
 ---
 
 ## 5. Key Implementation Points
