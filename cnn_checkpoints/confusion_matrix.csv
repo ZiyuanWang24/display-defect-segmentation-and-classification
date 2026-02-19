@@ -1,4 +1,4 @@
-true\pred,oil,scratch,stain
-oil,40,0,0
-scratch,0,40,0
-stain,0,0,40
+true\pred,oil,scr,sta
+oil,55,0,1
+scr,0,140,0
+sta,0,0,115

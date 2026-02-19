@@ -1,13 +1,13 @@
 metric,value
-accuracy,1.0
-macro_precision,1.0
-macro_recall,1.0
-macro_f1,1.0
-weighted_precision,1.0
-weighted_recall,1.0
-weighted_f1,1.0
+accuracy,0.9967845659163987
+macro_precision,0.9971264367816092
+macro_recall,0.9940476190476191
+macro_f1,0.9955539955539955
+weighted_precision,0.9968122851757402
+weighted_recall,0.9967845659163987
+weighted_f1,0.9967770417931189
 
 class,precision,recall,f1,support
-oil,1.0,1.0,1.0,40
-scratch,1.0,1.0,1.0,40
-stain,1.0,1.0,1.0,40
+oil,1.0,0.9821428571428571,0.9909909909909909,56
+scr,1.0,1.0,1.0,140
+sta,0.9913793103448276,1.0,0.9956709956709957,115

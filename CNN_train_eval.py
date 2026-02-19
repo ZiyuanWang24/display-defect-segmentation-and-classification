@@ -1,16 +1,39 @@
 # train_cnn.py
 """
-Train MobileNetV2 classifier on defect images/patches.
+Train MobileNetV2 classifier on "ground_truth_seperate" dataset.
 
-✅ Always trains ONLY 3 classes: oil, scratch, stain
-✅ Ignores extra folders like: ground_truth (and anything else)
-✅ Fails only if one of the required 3 folders is missing
+Expected structure:
+  data/ground_truth_seperate/
+    images/
+      <group_name>/   # e.g. oil_0013, scratch_0107, stain_0042 (or anything containing oil/scratch/stain)
+        *.png / *.jpg ...
+    masks/
+      <group_name>/   # same group subfolders
+        *.png         # binary masks aligned to the corresponding separated images
 
-NEW:
-✅ Stratified split into train / eval / test
-✅ Saves CSV manifests for each split (for reproducibility + report)
-✅ Saves training_log.csv + test metrics + confusion matrix (+ optional plot)
+Pairing rule:
+  For each mask file at masks/<relpath>, find image at images/<relpath>.
+  If extension differs, we try common image extensions.
+
+Label rule:
+  Infer class from:
+    - group folder name (first folder under images/masks), or
+    - filename, or
+    - any part of the relative path
+  Must map to exactly one of: oil/scratch/stain, else sample is skipped.
+
+Optionally crop image by mask bbox (default ON), then resize to img_size.
+
+Outputs:
+  out_dir/
+    splits_train.csv / splits_eval.csv / splits_test.csv
+    training_log.csv
+    mobilenetv2_best.pt
+    confusion_matrix.csv (+ optional confusion_matrix.png)
+    test_metrics.json / test_metrics.csv
+    summary_report.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,57 +43,23 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import transforms, models
 from torchvision.datasets.folder import default_loader, IMG_EXTENSIONS
 
-EXPECTED = ("oil", "scratch", "stain")
+
+EXPECTED = ("oil", "scr", "sta")
+IMG_EXTS = tuple(sorted(set([e.lower() for e in IMG_EXTENSIONS] + [".bmp", ".tif", ".tiff"])))
 
 
-class ThreeClassFolder(Dataset):
-    """
-    A strict 3-class folder dataset:
-      root/oil/**/*.png
-      root/scratch/**/*.png
-      root/stain/**/*.png
-
-    Any other folder (e.g., ground_truth) is ignored completely.
-    """
-    def __init__(self, root: str | Path, transform=None):
-        self.root = Path(root)
-        self.transform = transform
-        self.classes = list(EXPECTED)
-        self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
-        self.samples: List[Tuple[str, int]] = []
-
-        for c in self.classes:
-            class_dir = self.root / c
-            if not class_dir.exists():
-                raise FileNotFoundError(f"Missing required class folder: {class_dir}")
-
-            for dp, _dn, fnames in os.walk(class_dir):
-                for fn in fnames:
-                    if Path(fn).suffix.lower() in IMG_EXTENSIONS:
-                        self.samples.append((str(Path(dp) / fn), self.class_to_idx[c]))
-
-        if len(self.samples) == 0:
-            raise RuntimeError(f"No images found under {self.root} for classes {self.classes}")
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx: int):
-        path, y = self.samples[idx]
-        img = default_loader(path)  # PIL
-        if self.transform is not None:
-            img = self.transform(img)
-        return img, y
-
-
+# ----------------------------
+# model
+# ----------------------------
 def build_mobilenetv2(num_classes: int, pretrained: bool = True) -> nn.Module:
     weights = models.MobileNet_V2_Weights.DEFAULT if pretrained else None
     model = models.mobilenet_v2(weights=weights)
@@ -79,25 +68,236 @@ def build_mobilenetv2(num_classes: int, pretrained: bool = True) -> nn.Module:
     return model
 
 
-def _count_by_class(dataset: ThreeClassFolder, indices: List[int]) -> Dict[str, int]:
-    # dataset.samples: (path, y)
-    counts = {c: 0 for c in dataset.classes}
+def count_parameters(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters())
+
+
+# ----------------------------
+# parsing / utils
+# ----------------------------
+def infer_class_from_path(path: Path) -> Optional[str]:
+    """
+    Infer class (oil/scratch/stain) from any component of a path.
+    Works with names like:
+      oil_0013, scratch-0107, stain0002, etc.
+
+    Returns one of EXPECTED or None.
+    """
+    s = str(path).lower()
+
+    # strong tokens: check word-like boundaries
+    # but keep it simple and robust for underscores/digits
+    hits = []
+    for c in EXPECTED:
+        if c in s:
+            hits.append(c)
+
+    # if multiple appear (rare), prefer the earliest occurrence in the string
+    if not hits:
+        return None
+    hits = sorted(hits, key=lambda c: s.find(c))
+    return hits[0]
+
+
+def find_matching_image(images_root: Path, rel_mask_path: Path) -> Optional[Path]:
+    """
+    Given rel path under masks/, find corresponding image under images/.
+    Usually exact match exists; if not, try different extensions.
+    """
+    p = images_root / rel_mask_path
+    if p.exists():
+        return p
+
+    # try swap extension
+    stem = p.with_suffix("")  # remove suffix
+    for ext in IMG_EXTS:
+        cand = Path(str(stem) + ext)
+        if cand.exists():
+            return cand
+
+    return None
+
+
+def read_mask_binary(mask_path: Path) -> Optional[np.ndarray]:
+    import cv2
+    m = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if m is None:
+        return None
+    return (m > 0).astype(np.uint8)
+
+
+def mask_bbox(mask01: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    ys, xs = np.where(mask01 > 0)
+    if len(xs) == 0:
+        return None
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    return x0, y0, x1, y1
+
+
+def crop_with_pad(img: np.ndarray, bbox: Tuple[int, int, int, int], pad_ratio: float) -> np.ndarray:
+    """
+    img: HxWx3 RGB (uint8)
+    bbox: (x0,y0,x1,y1)
+    """
+    h, w = img.shape[:2]
+    x0, y0, x1, y1 = bbox
+    bw = max(1, x1 - x0 + 1)
+    bh = max(1, y1 - y0 + 1)
+    pad = int(round(pad_ratio * max(bw, bh)))
+
+    x0p = max(0, x0 - pad)
+    y0p = max(0, y0 - pad)
+    x1p = min(w - 1, x1 + pad)
+    y1p = min(h - 1, y1 + pad)
+
+    return img[y0p:y1p + 1, x0p:x1p + 1]
+
+
+# ----------------------------
+# Dataset
+# ----------------------------
+class ThreeClassSeparatedPairs(Dataset):
+    """
+    Dataset built from paired image+mask files under group subfolders.
+
+    root/
+      images/<group>/*.png
+      masks/<group>/*.png
+
+    Each sample is one separated instance image + its mask.
+    Label inferred from group folder name / filename.
+
+    Returns: (tensor_image, y)
+    """
+
+    def __init__(
+        self,
+        root: str | Path,
+        images_dirname: str = "images",
+        masks_dirname: str = "masks",
+        transform=None,
+        crop_by_mask: bool = True,
+        pad_ratio: float = 0.25,
+        min_mask_area: int = 5,
+    ):
+        self.root = Path(root)
+        self.images_root = self.root / images_dirname
+        self.masks_root = self.root / masks_dirname
+        self.transform = transform
+
+        self.crop_by_mask = bool(crop_by_mask)
+        self.pad_ratio = float(pad_ratio)
+        self.min_mask_area = int(min_mask_area)
+
+        if not self.images_root.exists():
+            raise FileNotFoundError(f"Missing images folder: {self.images_root}")
+        if not self.masks_root.exists():
+            raise FileNotFoundError(f"Missing masks folder: {self.masks_root}")
+
+        self.classes = list(EXPECTED)
+        self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
+        self.samples: List[Dict] = []
+
+        self._index_samples()
+
+        if len(self.samples) == 0:
+            raise RuntimeError(
+                "No samples found. Check folder structure and pairing.\n"
+                f"Expected masks under: {self.masks_root}\n"
+                f"Expected images under: {self.images_root}"
+            )
+
+    def _index_samples(self):
+        # iterate masks and pair images by relative path
+        mask_files = [p for p in self.masks_root.rglob("*") if p.is_file() and p.suffix.lower() in IMG_EXTS]
+        mask_files.sort()
+
+        for mp in mask_files:
+            rel = mp.relative_to(self.masks_root)  # e.g. groupA/inst_001.png
+
+            imgp = find_matching_image(self.images_root, rel)
+            if imgp is None:
+                continue
+
+            # infer class from group folder or filename/path
+            cls = infer_class_from_path(rel)
+            if cls is None:
+                # also try from the image filename itself
+                cls = infer_class_from_path(imgp)
+            if cls is None or cls not in self.class_to_idx:
+                continue
+
+            # quick mask sanity (optional)
+            m01 = read_mask_binary(mp)
+            if m01 is None:
+                continue
+            area = int(m01.sum())
+            if area < self.min_mask_area:
+                continue
+
+            self.samples.append(
+                {
+                    "image_path": str(imgp),
+                    "mask_path": str(mp),
+                    "y": int(self.class_to_idx[cls]),
+                    "class_name": cls,
+                    "rel": str(rel),
+                    "mask_area": area,
+                }
+            )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx: int):
+        import cv2
+        from PIL import Image
+
+        s = self.samples[idx]
+        img_path = Path(s["image_path"])
+        mask_path = Path(s["mask_path"])
+
+        bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise FileNotFoundError(f"Could not read image: {img_path}")
+        img_rgb = bgr[..., ::-1]  # RGB
+
+        if self.crop_by_mask:
+            m01 = read_mask_binary(mask_path)
+            if m01 is not None:
+                bbox = mask_bbox(m01)
+                if bbox is not None:
+                    img_rgb = crop_with_pad(img_rgb, bbox, self.pad_ratio)
+
+        pil = Image.fromarray(img_rgb)
+        if self.transform is not None:
+            x = self.transform(pil)
+        else:
+            x = pil
+
+        y = int(s["y"])
+        return x, y
+
+
+# ----------------------------
+# splitting + manifests
+# ----------------------------
+def count_by_class(ds: ThreeClassSeparatedPairs, indices: List[int]) -> Dict[str, int]:
+    counts = {c: 0 for c in ds.classes}
     for i in indices:
-        _p, y = dataset.samples[i]
-        counts[dataset.classes[y]] += 1
+        y = ds.samples[i]["y"]
+        counts[ds.classes[y]] += 1
     return counts
 
 
 def stratified_split_indices(
-    dataset: ThreeClassFolder,
+    labels: List[int],
     eval_split: float,
     test_split: float,
     seed: int,
+    num_classes: int,
 ) -> Tuple[List[int], List[int], List[int]]:
-    """
-    Stratified split over dataset.samples labels.
-    Returns (train_idx, eval_idx, test_idx).
-    """
     if not (0.0 < eval_split < 1.0) or not (0.0 <= test_split < 1.0):
         raise ValueError("Splits must satisfy: 0<eval_split<1 and 0<=test_split<1")
     if eval_split + test_split >= 1.0:
@@ -105,10 +305,9 @@ def stratified_split_indices(
 
     g = torch.Generator().manual_seed(seed)
 
-    # group indices by class
-    by_class: Dict[int, List[int]] = {i: [] for i in range(len(dataset.classes))}
-    for idx, (_p, y) in enumerate(dataset.samples):
-        by_class[y].append(idx)
+    by_class: Dict[int, List[int]] = {i: [] for i in range(num_classes)}
+    for idx, y in enumerate(labels):
+        by_class[int(y)].append(idx)
 
     train_idx: List[int] = []
     eval_idx: List[int] = []
@@ -116,45 +315,30 @@ def stratified_split_indices(
 
     for y, idxs in by_class.items():
         idxs = idxs.copy()
-        # shuffle deterministically using torch
         perm = torch.randperm(len(idxs), generator=g).tolist()
         idxs = [idxs[i] for i in perm]
 
         n = len(idxs)
-        if n < 3 and (eval_split > 0 or test_split > 0):
-            # with extremely tiny class counts, any 3-way split is unstable
-            # still do something sensible: prioritize train, then eval, then test
-            n_test = 1 if (test_split > 0 and n >= 3) else 0
-            n_eval = 1 if (eval_split > 0 and n - n_test >= 2) else 0
-        else:
-            n_test = int(round(n * test_split))
-            n_eval = int(round(n * eval_split))
+        n_test = int(round(n * test_split))
+        n_eval = int(round(n * eval_split))
 
-        # ensure at least 1 train sample per class
-        if n - (n_eval + n_test) < 1:
-            # reduce eval/test to keep train >= 1
+        # keep at least 1 train if possible
+        if n - (n_eval + n_test) < 1 and n > 0:
             overflow = 1 - (n - (n_eval + n_test))
-            # pull back from eval first, then test
             take_from_eval = min(n_eval, overflow)
             n_eval -= take_from_eval
             overflow -= take_from_eval
             take_from_test = min(n_test, overflow)
             n_test -= take_from_test
 
-        # slice
-        t0 = 0
-        t1 = n_test
-        t2 = n_test + n_eval
-
-        test_part = idxs[t0:t1]
-        eval_part = idxs[t1:t2]
-        train_part = idxs[t2:]
+        test_part = idxs[:n_test]
+        eval_part = idxs[n_test:n_test + n_eval]
+        train_part = idxs[n_test + n_eval:]
 
         test_idx.extend(test_part)
         eval_idx.extend(eval_part)
         train_idx.extend(train_part)
 
-    # final shuffle across classes for loaders
     def shuffle_list(lst: List[int]) -> List[int]:
         if len(lst) == 0:
             return lst
@@ -164,20 +348,19 @@ def stratified_split_indices(
     return shuffle_list(train_idx), shuffle_list(eval_idx), shuffle_list(test_idx)
 
 
-def save_split_csv(
-    dataset: ThreeClassFolder,
-    indices: List[int],
-    out_path: Path,
-) -> None:
+def save_split_csv(ds: ThreeClassSeparatedPairs, indices: List[int], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["path", "label", "class_name"])
+        w.writerow(["image_path", "mask_path", "label", "class_name", "rel", "mask_area"])
         for i in indices:
-            p, y = dataset.samples[i]
-            w.writerow([p, y, dataset.classes[y]])
+            s = ds.samples[i]
+            w.writerow([s["image_path"], s["mask_path"], s["y"], s["class_name"], s["rel"], s["mask_area"]])
 
 
+# ----------------------------
+# metrics
+# ----------------------------
 @dataclass
 class Metrics:
     accuracy: float
@@ -187,7 +370,7 @@ class Metrics:
     weighted_precision: float
     weighted_recall: float
     weighted_f1: float
-    per_class: Dict[str, Dict[str, float]]  # precision/recall/f1/support
+    per_class: Dict[str, Dict[str, float]]
 
 
 @torch.no_grad()
@@ -197,9 +380,6 @@ def evaluate_full(
     device: torch.device,
     class_names: List[str],
 ) -> Tuple[Metrics, List[List[int]]]:
-    """
-    Returns metrics + confusion matrix (C x C) where rows=true, cols=pred.
-    """
     model.eval()
     C = len(class_names)
     cm = [[0 for _ in range(C)] for _ in range(C)]
@@ -214,18 +394,13 @@ def evaluate_full(
 
         total += y.numel()
         correct += (pred == y).sum().item()
-
         for yt, yp in zip(y.tolist(), pred.tolist()):
             cm[yt][yp] += 1
 
     acc = correct / max(1, total)
 
-    # per-class precision/recall/f1
     per_class: Dict[str, Dict[str, float]] = {}
-    supports = []
-    precisions = []
-    recalls = []
-    f1s = []
+    supports, precisions, recalls, f1s = [], [], [], []
 
     for k, name in enumerate(class_names):
         tp = cm[k][k]
@@ -237,12 +412,7 @@ def evaluate_full(
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
 
-        per_class[name] = {
-            "precision": float(precision),
-            "recall": float(recall),
-            "f1": float(f1),
-            "support": int(support),
-        }
+        per_class[name] = {"precision": float(precision), "recall": float(recall), "f1": float(f1), "support": int(support)}
         supports.append(support)
         precisions.append(precision)
         recalls.append(recall)
@@ -281,12 +451,10 @@ def write_cm_csv(cm: List[List[int]], class_names: List[str], out_path: Path) ->
 def try_plot_confusion_matrix(cm: List[List[int]], class_names: List[str], out_path: Path) -> None:
     try:
         import matplotlib.pyplot as plt
-        import numpy as np
     except Exception:
         return
-
+    arr = np.array(cm, dtype=float)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    arr = __import__("numpy").array(cm, dtype=float)
     fig = plt.figure()
     ax = fig.add_subplot(111)
     im = ax.imshow(arr)
@@ -302,15 +470,8 @@ def try_plot_confusion_matrix(cm: List[List[int]], class_names: List[str], out_p
     plt.close(fig)
 
 
-def count_parameters(model: nn.Module) -> int:
-    return sum(p.numel() for p in model.parameters())
-
-
 @torch.no_grad()
 def benchmark_latency(model: nn.Module, loader: DataLoader, device: torch.device, iters: int = 50) -> Dict[str, float]:
-    """
-    Simple latency benchmark (ms/image) over a few batches.
-    """
     model.eval()
     times = []
     n_images = 0
@@ -324,48 +485,55 @@ def benchmark_latency(model: nn.Module, loader: DataLoader, device: torch.device
         if i >= 3:
             break
 
-    # timed
     for i, (x, _y) in enumerate(loader):
         if i >= iters:
             break
         x = x.to(device, non_blocking=True)
-
         t0 = time.perf_counter()
         _ = model(x)
         if device.type == "cuda":
             torch.cuda.synchronize()
         t1 = time.perf_counter()
-
         times.append(t1 - t0)
         n_images += x.shape[0]
 
     total_s = sum(times) if times else 1e-9
     ms_per_image = (total_s / max(1, n_images)) * 1000.0
     imgs_per_s = max(1e-9, n_images / total_s)
-
     return {"ms_per_image": float(ms_per_image), "images_per_second": float(imgs_per_s)}
 
 
+# ----------------------------
+# main
+# ----------------------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data_dir", type=str, default="data/MSD-US/test")
+    ap.add_argument("--data_dir", type=str, default="data/ground_truth_seperate")
+    ap.add_argument("--images_dirname", type=str, default="images")
+    ap.add_argument("--masks_dirname", type=str, default="masks")
+
     ap.add_argument("--out_dir", type=str, default="cnn_checkpoints")
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch_size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--weight_decay", type=float, default=1e-4)
 
-    ap.add_argument("--eval_split", type=float, default=0.2, help="fraction used for eval/validation")
-    ap.add_argument("--test_split", type=float, default=0.1, help="fraction used for test")
+    ap.add_argument("--eval_split", type=float, default=0.2)
+    ap.add_argument("--test_split", type=float, default=0.1)
     ap.add_argument("--img_size", type=int, default=224)
+
+    ap.add_argument("--crop_by_mask", action="store_true", help="Crop image by mask bbox (recommended)")
+    ap.add_argument("--no_crop_by_mask", action="store_true", help="Disable mask cropping")
+    ap.add_argument("--pad_ratio", type=float, default=0.25)
+    ap.add_argument("--min_mask_area", type=int, default=5)
 
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num_workers", type=int, default=4)
 
     ap.add_argument("--no_pretrained", action="store_true")
-    ap.add_argument("--plot_cm", action="store_true", help="save confusion_matrix.png")
-    ap.add_argument("--benchmark", action="store_true", help="measure simple latency numbers")
+    ap.add_argument("--plot_cm", action="store_true")
+    ap.add_argument("--benchmark", action="store_true")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -380,22 +548,35 @@ def main():
                              std=[0.229, 0.224, 0.225]),
     ])
 
-    ds = ThreeClassFolder(args.data_dir, transform=tfm)
+    crop_by_mask = True if not args.no_crop_by_mask else False
+    ds = ThreeClassSeparatedPairs(
+        root=args.data_dir,
+        images_dirname=args.images_dirname,
+        masks_dirname=args.masks_dirname,
+        transform=tfm,
+        crop_by_mask=crop_by_mask,
+        pad_ratio=args.pad_ratio,
+        min_mask_area=args.min_mask_area,
+    )
+
     classes = list(EXPECTED)
     print("Classes (forced):", classes)
     print("Total samples:", len(ds))
 
+    labels = [s["y"] for s in ds.samples]
     train_idx, eval_idx, test_idx = stratified_split_indices(
-        ds, eval_split=args.eval_split, test_split=args.test_split, seed=args.seed
+        labels=labels,
+        eval_split=args.eval_split,
+        test_split=args.test_split,
+        seed=args.seed,
+        num_classes=len(classes),
     )
 
-    # Print split stats
     print("\nSplit sizes:")
-    print("  train:", len(train_idx), _count_by_class(ds, train_idx))
-    print("  eval :", len(eval_idx), _count_by_class(ds, eval_idx))
-    print("  test :", len(test_idx), _count_by_class(ds, test_idx))
+    print("  train:", len(train_idx), count_by_class(ds, train_idx))
+    print("  eval :", len(eval_idx),  count_by_class(ds, eval_idx))
+    print("  test :", len(test_idx),  count_by_class(ds, test_idx))
 
-    # Save manifests for report + reproducibility
     save_split_csv(ds, train_idx, out_dir / "splits_train.csv")
     save_split_csv(ds, eval_idx,  out_dir / "splits_eval.csv")
     save_split_csv(ds, test_idx,  out_dir / "splits_test.csv")
@@ -420,7 +601,6 @@ def main():
     best_score = -1.0
     best_path = out_dir / "mobilenetv2_best.pt"
 
-    # training log for report
     log_path = out_dir / "training_log.csv"
     with log_path.open("w", newline="") as f:
         w = csv.writer(f)
@@ -443,9 +623,8 @@ def main():
                 running += float(loss.item())
 
             train_loss = running / max(1, len(train_loader))
-            eval_metrics, _cm_eval = evaluate_full(model, eval_loader, device, classes)
+            eval_metrics, _ = evaluate_full(model, eval_loader, device, classes)
 
-            # choose best by macro-F1 (more robust than accuracy if imbalance)
             score = eval_metrics.macro_f1
             print(
                 f"Epoch {ep}/{args.epochs} | "
@@ -462,19 +641,17 @@ def main():
                 torch.save({"state_dict": model.state_dict(), "classes": classes}, best_path)
                 print("Saved:", best_path)
 
-    # --- Final test evaluation with best checkpoint ---
+    # test with best
     ckpt = torch.load(best_path, map_location="cpu")
     model.load_state_dict(ckpt["state_dict"])
     model.to(device)
 
     test_metrics, cm = evaluate_full(model, test_loader, device, classes)
 
-    # Save confusion matrix + metrics for report
     write_cm_csv(cm, classes, out_dir / "confusion_matrix.csv")
     if args.plot_cm:
         try_plot_confusion_matrix(cm, classes, out_dir / "confusion_matrix.png")
 
-    # Save metrics.json and metrics.csv
     metrics_dict = asdict(test_metrics)
     with (out_dir / "test_metrics.json").open("w") as f:
         json.dump(metrics_dict, f, indent=2)
@@ -489,23 +666,26 @@ def main():
         w.writerow(["weighted_precision", test_metrics.weighted_precision])
         w.writerow(["weighted_recall", test_metrics.weighted_recall])
         w.writerow(["weighted_f1", test_metrics.weighted_f1])
-
         w.writerow([])
         w.writerow(["class", "precision", "recall", "f1", "support"])
         for c in classes:
             d = test_metrics.per_class[c]
             w.writerow([c, d["precision"], d["recall"], d["f1"], d["support"]])
 
-    # Optional: add model size + latency info to a single summary json for report writing
     summary = {
         "data_dir": args.data_dir,
+        "images_dirname": args.images_dirname,
+        "masks_dirname": args.masks_dirname,
         "classes": classes,
         "img_size": args.img_size,
         "seed": args.seed,
+        "crop_by_mask": crop_by_mask,
+        "pad_ratio": args.pad_ratio,
+        "min_mask_area": args.min_mask_area,
         "splits": {
-            "train": {"n": len(train_idx), "counts": _count_by_class(ds, train_idx)},
-            "eval":  {"n": len(eval_idx),  "counts": _count_by_class(ds, eval_idx)},
-            "test":  {"n": len(test_idx),  "counts": _count_by_class(ds, test_idx)},
+            "train": {"n": len(train_idx), "counts": count_by_class(ds, train_idx)},
+            "eval":  {"n": len(eval_idx),  "counts": count_by_class(ds, eval_idx)},
+            "test":  {"n": len(test_idx),  "counts": count_by_class(ds, test_idx)},
         },
         "best_checkpoint": str(best_path),
         "best_selection_metric": "eval_macro_f1",
@@ -520,9 +700,9 @@ def main():
         json.dump(summary, f, indent=2)
 
     print("\n=== Test results (best checkpoint) ===")
-    print("accuracy      :", f"{test_metrics.accuracy:.4f}")
-    print("macro_f1      :", f"{test_metrics.macro_f1:.4f}")
-    print("per_class     :", test_metrics.per_class)
+    print("accuracy :", f"{test_metrics.accuracy:.4f}")
+    print("macro_f1 :", f"{test_metrics.macro_f1:.4f}")
+    print("per_class:", test_metrics.per_class)
     print("\nSaved artifacts to:", out_dir)
 
 

@@ -4,33 +4,6 @@ This repo fine-tunes **SAM2** (Segment Anything Model 2) to segment *display sur
 The goal is to improve segmentation quality on small / low-contrast defects where zero-shot SAM2 can struggle.
 
 ---
-
-<<<<<<< HEAD
-## Report structure (what you’ll typically see in SAM fine-tuning reports)
-
-Across popular SAM/SAM2 fine-tuning writeups and repos, the common structure is:
-
-1. **Problem / Motivation** (why zero-shot SAM fails on the target domain)  
-2. **Dataset** (format, split, labeling, examples)  
-3. **Method**  
-   - model variant (SAM / SAM2 size)  
-   - prompt strategy (points / boxes / masks)  
-   - what is frozen vs trained (encoder / prompt encoder / decoder)  
-   - loss functions and selection rules  
-4. **Training setup** (hardware, hyperparameters, reproducibility)  
-5. **Evaluation**  
-   - metrics (IoU, Dice, precision, recall)  
-   - baseline comparison (zero-shot vs fine-tuned)  
-   - qualitative visuals  
-6. **Results** (tables + figures + failure cases)  
-7. **Deployment notes** (how inference is done; latency/throughput if measured)  
-8. **Limitations & future work**  
-9. **References / citation**
-
-This README follows that template.
-
-=======
->>>>>>> 5259cfd20509f35f733d28c628f48563ac6c4d1d
 ---
 
 ## 1) Problem & Motivation
@@ -95,29 +68,14 @@ Then you backprop **only through the best candidate**.
 Why it matters for scratch/oil/stain:
 - Defects are subtle; the “best” candidate may *not* be the one with the highest SAM score early in training.
 - Oracle selection provides a **cleaner learning signal** (stronger supervision) for small objects.
+- **Multi-defect → single-defect preprocessing:** for images that originally contain multiple defects, I split them into **separate single-defect samples** (one GT mask per sample). This ensures each prompt corresponds to exactly **one target defect**, reducing ambiguity and making the oracle selection signal more reliable.
 
 #### (B) **Segmentation loss = BCEWithLogits + Soft Dice**
-You train the selected mask with:
-
 - `seg_loss = 0.5 * BCEWithLogits(best_logits, GT) + 0.5 * SoftDice(sigmoid(best_logits), GT)`
 
 Why it matters:
 - Dice helps with **class imbalance** (defects are small).
 - BCE stabilizes pixel-wise learning.
-
-#### (C) **Score calibration aligned with deploy-time selection**
-At deployment you cannot use GT to pick the best mask. You must rely on SAM’s predicted per-mask score.
-
-So the training also calibrates the score head:
-
-- Compute **soft IoU** between predicted probability mask and GT (`iou_soft`)
-- Add a loss term: `|pred_score(best_k) - iou_soft|`
-
-This encourages SAM’s score to correlate with true overlap, improving *deployable* mask selection.
-
-#### (D) Balanced evaluation split (stratified by defect type)
-The code tries to infer class labels (scratch/oil/stain) from metadata or file paths and performs a **stratified train/eval split**.  
-This avoids accidentally validating mostly on one defect type.
 
 ### 3.5 Validation during training
 Every `--eval_every` steps:
@@ -205,33 +163,9 @@ Saved to `--out_dir` (default `checkpoints/`):
 
 | Class | n | IoU (Zero-shot) | IoU (Fine-tuned) | Δ IoU | Dice (Zero-shot) | Dice (Fine-tuned) |
 |------:|--:|----------------:|-----------------:|------:|-----------------:|------------------:|
-<<<<<<< HEAD
-| scratch |  |  |  |  |  |  |
-| oil     |  |  |  |  |  |  |
-| stain   |  |  |  |  |  |  |
-
-### Qualitative comparison
-
-Add the generated grid image here:
-
-```md
-![Zero-shot vs Fine-tuned](checkpoints/test_visual_grid.png)
-```
-
-### Latency / throughput
-
-The script prints an on-machine benchmark similar to:
-
-- p50 latency: **X ms**
-- p95 latency: **Y ms**
-- throughput: **~Z FPS (p50)**
-
-Copy/paste that paragraph into this section after running.
-
-=======
-|scratch | 80 | 0.0052 | 0.0103 | 0.0052 | 0.5489 | 0.0286 | 0.0557 | 0.0286 | 0.9700 | 0.0235
-|oil | 80 | 0.2734 | 0.4294 | 0.2856 | 0.8645 | 0.6532 | 0.7902 | 0.6656 | 0.9723 | 0.3798
-|stain | 80 | 0.0008 | 0.0017 | 0.0008 | 0.5339 | 0.0024 | 0.0049 | 0.0024 | 0.9421 | 0.0016
+oil | 112 | 0.9318 | 0.9647 | 0.9836 | 0.9464 | 0.9436 | 0.9710 | 0.9730 | 0.9690 | 0.0118
+scratch | 279 | 0.5248 | 0.6884 | 0.5276 | 0.9901 | 0.7575 | 0.8620 | 0.7879 | 0.9515 | 0.2327
+stain | 230 | 0.0665 | 0.1248 | 0.0668 | 0.9476 | 0.7895 | 0.8824 | 0.8485 | 0.9192 | 0.7230
 
 
 ### Qualitative comparison
@@ -240,8 +174,6 @@ Copy/paste that paragraph into this section after running.
 ![Zero-shot vs Fine-tuned](checkpoints/test_visual_grid.png)
 
 ```
-
->>>>>>> 5259cfd20509f35f733d28c628f48563ac6c4d1d
 ---
 
 ## 7) Deployment notes
@@ -264,24 +196,3 @@ If you need higher recall, lower the threshold; if you need fewer false positive
 - **Single-instance assumption** per image (one prompt point). Multi-defect images may require multi-point prompting.
 - Consider lightweight **data augmentation** (contrast/blur/noise) to improve robustness across inspection conditions.
 - Consider unfreezing (or LoRA/adapter on) parts of the **image encoder** if domain shift is large.
-
-<<<<<<< HEAD
----
-
-## 9) References
-
-- SAM2: Segment Anything in Images and Videos (arXiv:2408.00714)  
-- Popular SAM fine-tuning templates and repos:
-  - mazurowski-lab/finetune-SAM (comprehensive empirical study + code)
-  - WholeNow/finestSAM (configuration-driven fine-tuning framework)
-  - MathieuNlp/Sam_LoRA (report-style README with baseline vs fine-tuned + visuals)
-  - Roboflow & LearnOpenCV tutorials for SAM2 fine-tuning workflows
-
----
-
-## 10) Citation
-
-If you use SAM/SAM2 in academic work, cite the original Segment Anything / SAM2 papers (per their official BibTeX).
-=======
-
->>>>>>> 5259cfd20509f35f733d28c628f48563ac6c4d1d

@@ -1,66 +1,71 @@
 {
-  "data_dir": "data/MSD-US/test",
+  "data_dir": "data/ground_truth_seperate",
+  "images_dirname": "images",
+  "masks_dirname": "masks",
   "classes": [
     "oil",
-    "scratch",
-    "stain"
+    "scr",
+    "sta"
   ],
   "img_size": 224,
   "seed": 42,
+  "crop_by_mask": true,
+  "pad_ratio": 0.25,
+  "min_mask_area": 5,
   "splits": {
     "train": {
-      "n": 840,
+      "n": 2172,
       "counts": {
-        "oil": 280,
-        "scratch": 280,
-        "stain": 280
+        "oil": 391,
+        "scr": 976,
+        "sta": 805
       }
     },
     "eval": {
-      "n": 240,
+      "n": 621,
       "counts": {
-        "oil": 80,
-        "scratch": 80,
-        "stain": 80
+        "oil": 112,
+        "scr": 279,
+        "sta": 230
       }
     },
     "test": {
-      "n": 120,
+      "n": 311,
       "counts": {
-        "oil": 40,
-        "scratch": 40,
-        "stain": 40
+        "oil": 56,
+        "scr": 140,
+        "sta": 115
       }
     }
   },
   "best_checkpoint": "cnn_checkpoints/mobilenetv2_best.pt",
   "best_selection_metric": "eval_macro_f1",
   "test_metrics": {
-    "accuracy": 1.0,
-    "macro_precision": 1.0,
-    "macro_recall": 1.0,
-    "macro_f1": 1.0,
-    "weighted_precision": 1.0,
-    "weighted_recall": 1.0,
-    "weighted_f1": 1.0,
+    "accuracy": 0.9967845659163987,
+    "macro_precision": 0.9971264367816092,
+    "macro_recall": 0.9940476190476191,
+    "macro_f1": 0.9955539955539955,
+    "weighted_precision": 0.9968122851757402,
+    "weighted_recall": 0.9967845659163987,
+    "weighted_f1": 0.9967770417931189,
     "per_class": {
       "oil": {
         "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 40
+        "recall": 0.9821428571428571,
+        "f1": 0.9909909909909909,
+        "support": 56
       },
-      "scratch": {
+      "scr": {
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0,
-        "support": 40
+        "support": 140
       },
-      "stain": {
-        "precision": 1.0,
+      "sta": {
+        "precision": 0.9913793103448276,
         "recall": 1.0,
-        "f1": 1.0,
-        "support": 40
+        "f1": 0.9956709956709957,
+        "support": 115
       }
     }
   },

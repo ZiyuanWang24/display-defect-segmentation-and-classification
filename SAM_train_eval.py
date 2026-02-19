@@ -324,7 +324,7 @@ def main():
 
     # Train
     ap.add_argument("--device", type=str, default="cuda")
-    ap.add_argument("--steps", type=int, default=1000)
+    ap.add_argument("--steps", type=int, default=6000)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight_decay", type=float, default=1e-4)
     ap.add_argument("--save_every", type=int, default=500)
@@ -847,7 +847,7 @@ def main():
             }
         )
 
-    metrics_csv = out_dir / "test_metrics_per_class.csv"
+    metrics_csv =  'SAM_results/test_metrics_per_class.csv'
     with open(metrics_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else ["class"])
         w.writeheader()
@@ -867,7 +867,7 @@ def main():
     print(f"\n[Eval] Saved per-class CSV: {metrics_csv}")
 
     # Visual grid (optional)
-    vis_path = out_dir / "test_visual_grid.png"
+    vis_path =  "SAM_results/test_visual_grid.png"
     try:
         import matplotlib.pyplot as plt
 
