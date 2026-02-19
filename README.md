@@ -41,3 +41,20 @@ data/MSD-US/test/
 - **SAM2 fine-tuning performance:** [README_sam2_display_defects.md](README_sam2_display_defects.md)  
 - **MobileNetV2 training performance:** [README_mobilenetv2_report.md](README_mobilenetv2_report.md)
 
+### SAM2 + MobileNetV2 Pipeline Performance
+
+**Evaluation set summary**
+- **Found samples:** 3,104  
+- **Counts by class:** oil = 559, scratch = 1,395, stain = 1,150  
+
+**Results**
+- **Segmentation (SAM2 fine-tuned):** IoU = 0.9190 · Dice = 0.9578  
+- **Classification (MobileNetV2):** Accuracy = 0.9082  
+- **End-to-end (IoU ≥ 0.5 & correct class):** Accuracy = 0.8950
+
+**Qualitative examples**
+- ![Oil examples](pipeline_results/examples_oil.png)
+- ![Scratch examples](pipeline_results/examples_scratch.png)
+- ![Stain examples](pipeline_results/examples_stain.png)
+
+

@@ -1,0 +1,10 @@
+metric,value
+n_samples,3104
+seg_iou,0.9190135562755783
+seg_dice,0.957797878259078
+seg_precision,0.9549286992651038
+seg_recall,0.9606843506846585
+cls_acc,0.9081829896907216
+end2end_acc,0.8949742268041238
+iou_thr_e2e,0.5
+prompt_mode,oracle_dt
